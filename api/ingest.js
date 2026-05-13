@@ -37,10 +37,7 @@ async function gdriveSearch(q, fields = 'files(id,createdTime)') {
   const res = await fetch(`https://api.maton.ai/google-drive/drive/v3/files?${params}`, {
     headers: gdriveHeaders(),
   });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Drive search ${res.status}: ${errText.slice(0,120)}`);
-  }
+  if (!res.ok) return [];
   const data = await res.json();
   return data.files || [];
 }
@@ -152,20 +149,24 @@ async function gdriveUploadBinary(name, folderId, buffer, mimeType) {
 
 // ---- Core logging ----
 async function appendToLog(groupName, dateStr, htmlBlock) {
-  const rootId = await gdriveGetRootId();
-  const logsId = await gdriveGetOrCreateFolder('LINE-Logs', rootId);
-  const groupFolderId = await gdriveGetOrCreateFolder(groupName, logsId);
-  const fileName = `${dateStr}.md`;
-  const files = await gdriveSearch(`name='${fileName}' and '${groupFolderId}' in parents and trashed=false`, 'files(id)');
-  let existing = '<div class="lc">\n';
-  let fileId = null;
-  if (files.length > 0) {
-    fileId = files[0].id;
-    const content = await gdriveReadText(fileId);
-    if (content) existing = content;
+  try {
+    const rootId = await gdriveGetRootId();
+    const logsId = await gdriveGetOrCreateFolder('LINE-Logs', rootId);
+    const groupFolderId = await gdriveGetOrCreateFolder(groupName, logsId);
+    const fileName = `${dateStr}.md`;
+    const files = await gdriveSearch(`name='${fileName}' and '${groupFolderId}' in parents and trashed=false`, 'files(id)');
+    let existing = '<div class="lc">\n';
+    let fileId = null;
+    if (files.length > 0) {
+      fileId = files[0].id;
+      const content = await gdriveReadText(fileId);
+      if (content) existing = content;
+    }
+    await gdriveWriteText(fileName, groupFolderId, existing + htmlBlock, fileId);
+    console.log(`[GDRIVE] Log: ${groupName}/${dateStr}`);
+  } catch (e) {
+    console.error('[GDRIVE] Log error:', e.message);
   }
-  await gdriveWriteText(fileName, groupFolderId, existing + htmlBlock, fileId);
-  console.log(`[GDRIVE] Log: ${groupName}/${dateStr}`);
 }
 
 // ---- Utilities ----
@@ -356,15 +357,7 @@ export default async function handler(req, res) {
     if (!batches[key]) batches[key] = { groupName: entry.groupName, dateStr: entry.dateStr, html: '' };
     batches[key].html += entry.html;
   }
-  const driveErrors = [];
-  for (const b of Object.values(batches)) {
-    try {
-      await appendToLog(b.groupName, b.dateStr, b.html);
-    } catch (e) {
-      driveErrors.push(e.message);
-    }
-  }
+  await Promise.all(Object.values(batches).map(b => appendToLog(b.groupName, b.dateStr, b.html)));
 
-  const envCheck = process.env.MATON_API_KEY ? `key_len:${process.env.MATON_API_KEY.length}` : 'NO_KEY';
-  return res.status(200).json({ success: true, debug: envCheck, batchCount: Object.keys(batches).length, driveErrors });
+  return res.status(200).json({ success: true });
 }
