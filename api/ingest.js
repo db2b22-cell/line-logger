@@ -231,13 +231,17 @@ async function getMemberIdFromSheets(userId) {
   }
 }
 
+const profileUploadLock = new Set();
+
 async function ensureProfilePic(userId, senderName, source) {
   try {
     const rootId = await gdriveGetRootId();
     const profilesId = await gdriveGetOrCreateFolder('LINE-Profiles', rootId);
     const picName = `${senderName}.jpg`;
+    if (profileUploadLock.has(picName)) return;
     const existing = await gdriveSearch(`name='${picName}' and '${profilesId}' in parents and trashed=false`, 'files(id)');
     if (existing.length > 0) return;
+    profileUploadLock.add(picName);
     let profileUrl;
     if (source && source.type === 'group') {
       profileUrl = `https://api.line.me/v2/bot/group/${source.groupId}/member/${userId}`;
@@ -255,6 +259,8 @@ async function ensureProfilePic(userId, senderName, source) {
     console.log(`[PROFILE] Saved ${senderName}`);
   } catch (e) {
     console.error(`[PROFILE] Error: ${e.message}`);
+  } finally {
+    profileUploadLock.delete(picName);
   }
 }
 
