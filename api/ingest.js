@@ -32,9 +32,21 @@ const gdriveHeaders = () => ({
   'Maton-Connection': GDRIVE_CONNECTION_ID,
 });
 
+// Retry helper for rate-limited requests (429)
+async function fetchWithRetry(url, options, maxRetries = 4) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const res = await fetch(url, options);
+    if (res.status !== 429) return res;
+    const delay = (attempt + 1) * 1000;
+    console.warn(`[RETRY] 429 on ${url.split('?')[0].split('/').slice(-2).join('/')}, waiting ${delay}ms`);
+    await new Promise(r => setTimeout(r, delay));
+  }
+  return fetch(url, options);
+}
+
 async function gdriveSearch(q, fields = 'files(id,createdTime)') {
   const params = new URLSearchParams({ q, fields, spaces: 'drive' });
-  const res = await fetch(`https://api.maton.ai/google-drive/drive/v3/files?${params}`, {
+  const res = await fetchWithRetry(`https://api.maton.ai/google-drive/drive/v3/files?${params}`, {
     headers: gdriveHeaders(),
   });
   if (!res.ok) return [];
@@ -52,7 +64,7 @@ async function gdriveGetOrCreateFolder(name, parentId) {
     folderIdCache[key] = winner.id;
     return winner.id;
   }
-  await fetch('https://api.maton.ai/google-drive/drive/v3/files', {
+  await fetchWithRetry('https://api.maton.ai/google-drive/drive/v3/files', {
     method: 'POST',
     headers: { ...gdriveHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }),
@@ -73,7 +85,7 @@ async function gdriveGetRootId() {
     folderIdCache['__root__'] = winner.id;
     return winner.id;
   }
-  await fetch('https://api.maton.ai/google-drive/drive/v3/files', {
+  await fetchWithRetry('https://api.maton.ai/google-drive/drive/v3/files', {
     method: 'POST',
     headers: { ...gdriveHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'Makatoon', mimeType: 'application/vnd.google-apps.folder' }),
@@ -86,7 +98,7 @@ async function gdriveGetRootId() {
 }
 
 async function gdriveReadText(fileId) {
-  const res = await fetch(`https://api.maton.ai/google-drive/drive/v3/files/${fileId}?alt=media`, {
+  const res = await fetchWithRetry(`https://api.maton.ai/google-drive/drive/v3/files/${fileId}?alt=media`, {
     headers: gdriveHeaders(),
   });
   if (!res.ok) return null;
@@ -118,7 +130,7 @@ async function gdriveWriteText(name, folderId, content, existingId = null) {
     ? `https://api.maton.ai/google-drive/upload/drive/v3/files/${existingId}?uploadType=multipart`
     : 'https://api.maton.ai/google-drive/upload/drive/v3/files?uploadType=multipart';
   const method = existingId ? 'PATCH' : 'POST';
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method,
     headers: { ...gdriveHeaders(), 'Content-Type': contentType },
     body,
@@ -130,21 +142,31 @@ async function gdriveWriteText(name, folderId, content, existingId = null) {
   return await res.json();
 }
 
+// Single multipart upload (1 request instead of 2) to reduce rate limit pressure
 async function gdriveUploadBinary(name, folderId, buffer, mimeType) {
-  const metaRes = await fetch('https://api.maton.ai/google-drive/drive/v3/files', {
-    method: 'POST',
-    headers: { ...gdriveHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, parents: [folderId] }),
-  });
-  if (!metaRes.ok) throw new Error(`Create metadata failed: ${metaRes.status}`);
-  const { id: fileId } = await metaRes.json();
-  const upRes = await fetch(`https://api.maton.ai/google-drive/upload/drive/v3/files/${fileId}?uploadType=media`, {
-    method: 'PATCH',
-    headers: { ...gdriveHeaders(), 'Content-Type': mimeType },
-    body: buffer,
-  });
-  if (!upRes.ok) throw new Error(`Upload binary failed: ${upRes.status}`);
-  return fileId;
+  const boundary = 'gdrive_binary_maton';
+  const meta = JSON.stringify({ name, parents: [folderId] });
+  const metaPart = Buffer.from(
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`,
+    'utf-8'
+  );
+  const endPart = Buffer.from(`\r\n--${boundary}--`, 'utf-8');
+  const body = Buffer.concat([metaPart, Buffer.from(buffer), endPart]);
+
+  const res = await fetchWithRetry(
+    'https://api.maton.ai/google-drive/upload/drive/v3/files?uploadType=multipart',
+    {
+      method: 'POST',
+      headers: { ...gdriveHeaders(), 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body,
+    }
+  );
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`gdriveUploadBinary failed: ${res.status} ${err.slice(0, 100)}`);
+  }
+  const data = await res.json();
+  return data.id;
 }
 
 // ---- Core logging ----
@@ -352,10 +374,15 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const events = body.events || [];
 
-  const entries = await Promise.all(events.map(e => processEvent(e).catch(err => {
-    console.error('[EVENT] Error:', err.message);
-    return null;
-  })));
+  // Process events sequentially to avoid concurrent rate-limit pressure on Google Drive API
+  const entries = [];
+  for (const e of events) {
+    const entry = await processEvent(e).catch(err => {
+      console.error('[EVENT] Error:', err.message);
+      return null;
+    });
+    entries.push(entry);
+  }
 
   const batches = {};
   for (const entry of entries.filter(Boolean)) {
