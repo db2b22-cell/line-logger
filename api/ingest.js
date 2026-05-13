@@ -359,8 +359,15 @@ export default async function handler(req, res) {
     if (!batches[key]) batches[key] = { groupName: entry.groupName, dateStr: entry.dateStr, html: '' };
     batches[key].html += entry.html;
   }
-  await Promise.all(Object.values(batches).map(b => appendToLog(b.groupName, b.dateStr, b.html)));
+  const driveErrors = [];
+  for (const b of Object.values(batches)) {
+    try {
+      await appendToLog(b.groupName, b.dateStr, b.html);
+    } catch (e) {
+      driveErrors.push(e.message);
+    }
+  }
 
   const envCheck = process.env.MATON_API_KEY ? `key_len:${process.env.MATON_API_KEY.length}` : 'NO_KEY';
-  return res.status(200).json({ success: true, debug: envCheck });
+  return res.status(200).json({ success: true, debug: envCheck, batchCount: Object.keys(batches).length, driveErrors });
 }
