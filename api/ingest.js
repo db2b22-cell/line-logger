@@ -37,7 +37,10 @@ async function gdriveSearch(q, fields = 'files(id,createdTime)') {
   const res = await fetch(`https://api.maton.ai/google-drive/drive/v3/files?${params}`, {
     headers: gdriveHeaders(),
   });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Drive search ${res.status}: ${errText.slice(0,120)}`);
+  }
   const data = await res.json();
   return data.files || [];
 }
