@@ -164,8 +164,10 @@ async function appendToLog(groupName, dateStr, htmlBlock) {
     }
     await gdriveWriteText(fileName, groupFolderId, existing + htmlBlock, fileId);
     console.log(`[GDRIVE] Log: ${groupName}/${dateStr}`);
+    return null;
   } catch (e) {
     console.error('[GDRIVE] Log error:', e.message);
+    return e.message;
   }
 }
 
