@@ -149,26 +149,20 @@ async function gdriveUploadBinary(name, folderId, buffer, mimeType) {
 
 // ---- Core logging ----
 async function appendToLog(groupName, dateStr, htmlBlock) {
-  try {
-    const rootId = await gdriveGetRootId();
-    const logsId = await gdriveGetOrCreateFolder('LINE-Logs', rootId);
-    const groupFolderId = await gdriveGetOrCreateFolder(groupName, logsId);
-    const fileName = `${dateStr}.md`;
-    const files = await gdriveSearch(`name='${fileName}' and '${groupFolderId}' in parents and trashed=false`, 'files(id)');
-    let existing = '<div class="lc">\n';
-    let fileId = null;
-    if (files.length > 0) {
-      fileId = files[0].id;
-      const content = await gdriveReadText(fileId);
-      if (content) existing = content;
-    }
-    await gdriveWriteText(fileName, groupFolderId, existing + htmlBlock, fileId);
-    console.log(`[GDRIVE] Log: ${groupName}/${dateStr}`);
-    return null;
-  } catch (e) {
-    console.error('[GDRIVE] Log error:', e.message);
-    return e.message;
+  const rootId = await gdriveGetRootId();
+  const logsId = await gdriveGetOrCreateFolder('LINE-Logs', rootId);
+  const groupFolderId = await gdriveGetOrCreateFolder(groupName, logsId);
+  const fileName = `${dateStr}.md`;
+  const files = await gdriveSearch(`name='${fileName}' and '${groupFolderId}' in parents and trashed=false`, 'files(id)');
+  let existing = '<div class="lc">\n';
+  let fileId = null;
+  if (files.length > 0) {
+    fileId = files[0].id;
+    const content = await gdriveReadText(fileId);
+    if (content) existing = content;
   }
+  await gdriveWriteText(fileName, groupFolderId, existing + htmlBlock, fileId);
+  console.log(`[GDRIVE] Log: ${groupName}/${dateStr}`);
 }
 
 // ---- Utilities ----
