@@ -359,5 +359,6 @@ export default async function handler(req, res) {
   }
   await Promise.all(Object.values(batches).map(b => appendToLog(b.groupName, b.dateStr, b.html)));
 
-  return res.status(200).json({ success: true });
+  const envCheck = process.env.MATON_API_KEY ? `key_len:${process.env.MATON_API_KEY.length}` : 'NO_KEY';
+  return res.status(200).json({ success: true, debug: envCheck });
 }
